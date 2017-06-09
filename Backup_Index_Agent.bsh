@@ -1,0 +1,227 @@
+#!/bin/bash
+VERSION="Linux File Index Agent v4.0"
+ 
+# Debug setting
+# set -x
+ 
+declare LogItStr="LogIt Function for $VERSION on $HOSTNAME running '$(uname -o)' - PID $$"
+LogIt() {
+    # LOGITLINE=$@
+    if [ "$1" == "WRITE" ]; then
+        echo "$LogItStr" >> $2
+        LogItStr=""
+    else
+        LogItStr+=$(printf "\n$(date +"%Y%m%d %T.%3N") - $@")
+    fi
+}
+ 
+declare WriteIndexStr WriteIndexStrSize=0 WriteIndexLines=0
+WriteIndex() {
+    WriteIndexLine=$@
+
+    # If the input is not 'WRITE', assume it is a string to store in variable
+    if [ "$WriteIndexLine" != "WRITE" ]; then
+        if [ $WriteIndexStrSize -eq 0 ]; then
+            LogIt "WriteIndex: Memorize first line: $WriteIndexLine"
+            WriteIndexStr=$(printf "$WriteIndexLine")
+        else
+            LogIt "WriteIndex: Memorize new line after line $WriteIndexStrSize: $WriteIndexLine"
+            WriteIndexStr+=$(printf "\n$WriteIndexLine")
+        fi
+        # Increase the line counter
+        ((WriteIndexStrSize++))
+    fi
+ 
+    # If the instruction is 'WRITE' or the defined numver of lines is matched, write the content to file.
+    if [ "$WriteIndexLine" == "WRITE" ] || [ $WriteIndexStrSize -ge $WriteIndexInterval ]; then
+        LogIt "WriteIndex, Write initiated, current WriteIndexStrSize $WriteIndexStrSize of $WriteIndexInterval. WriteIndexLine: $WriteIndexLine"
+        echo "$WriteIndexStr" >> $INDEXFILE.tmp
+        WriteIndexLines=$(expr $WriteIndexLines + $WriteIndexStrSize)
+        duration=$SECONDS
+        LogIt "Total elapsed time: $(($duration / 60)) minutes and $(($duration % 60)) seconds for $WriteIndexLines files."
+        WriteIndexStrSize=0
+        LogIt "Set WriteIndexStrSize to $WriteIndexStrSize"
+    fi
+}
+ 
+StartIndex() {
+    # Argument 1 = ROOT from where to start indexing | Argument 2 = Location for the index file
+    ROOT=$1
+    INDEXFILE=$2
+    INDEXDIR=$(dirname "${INDEXFILE}")
+    WriteIndexLines=0
+
+    if [ ! -d "$INDEXDIR" ]; then
+        mkdir -p $INDEXDIR
+        LogIt "INDEXDIR '$INDEXDIR' not found, directory created"
+    fi
+ 
+    if [ -f $INDEXFILE.tmp ]; then
+        LogIt "STOPPED $$, '$INDEXFILE.tmp' exists, expecting another instance to be running!"
+        echo  "STOPPED $$, '$INDEXFILE.tmp' exists, expecting another instance to be running!"
+        LogIt "WRITE" $LOGTARGET
+        exit
+    else
+        LogIt "'$INDEXFILE.tmp' not found, expecting no another instance to be running."
+        printf '"FileChangeDate","FileHash","RelativePath","Hostname"\n' > $INDEXFILE.tmp
+    fi
+ 
+    LogIt "Starting Indexing '$ROOT', path string-length ${#ROOT}, storing index in '$INDEXFILE'"
+ 
+    # Declare outside the read loop, so it is available when the loop is done
+    declare FHASH WriteIndexStr
+  
+    if [ -f $INDEXFILE ]; then
+        LogIt "Indexfile '$INDEXFILE' found"
+        # Generating alphabetical indexes
+        for X in {A..Z}
+        do
+            declare INDEX_$X="$(sort -k3 -n $INDEXFILE | grep ",/$X" --ignore-case)"
+        done
+
+        # Generating number indexes
+        for X in {0..9}
+        do
+            declare INDEX_$X="$(sort -k3 -n $INDEXFILE | grep ",/$X" --ignore-case)"
+        done
+
+        LogIt "Indexfile devided into seperated indexes to increase performance on per file index search"
+    else 
+        LogIt "Indexfile '$INDEXFILE' NOT found!"
+    fi
+ 
+    LogIt "WRITE" $LOGTARGET
+    SECONDS=0
+    while read -r FFN
+    do
+        LogIt "FullFileName is '$FFN' ============"
+        
+        FN=$(echo $FFN | cut -b ${#ROOT}-)
+        if [ "$FN" != "/" ] && [ "$FN" != "" ]; then
+            IDX=$(echo $FN | cut -b 2-2)
+            FCD=$(stat -c %Y "$FFN")
+            LogIt "Start processing '$FN', File change date is '$FCD', Dynamic INDEX ID is: '$IDX'"
+
+            if [ "$LAST_IDX" != "$IDX" ]; then
+                LogIt "Creating dynamic index 'INDEX_$IDX' since previous IDX was '$LAST_IDX'"
+                INDEX="INDEX_$IDX"
+                LAST_IDX=$IDX
+            fi
+            if [ -z "${!INDEX}" ]; then
+                # Indexfile not found
+                LogIt "No index file, generating filehash for '$FN'"
+                FHASH=$(sha256sum "$FFN" | awk -F' ' '{ print $1 }')
+            else
+                GrepStart="$(date +%s%N)"
+                INDEXGREP=$(echo -e "${!INDEX} \n" | LC_ALL=C grep -m 1 "$FN")
+                GrepStop="$(date +%s%N)"
+                GrepMS=$(((($GrepStop - $GrepStart))/1000000))
+                LogIt "IndexGrep took: $GrepMS milliseconds"
+                
+                IFS=","
+                while read col1 col2 col3 col4
+                do
+                    # LogIt "Reading index line '${col3}' for match on '$FN'"
+                    if [ ! -z ${col3} ]; then 
+                        if [ $FN == ${col3} ]; then
+                            LogIt "File '$FN' found in index file, matched on '${col3}'"
+                            # Match on file name
+                            if [ $FCD -ne ${col1} ]; then
+                               # Date does not match, so file changed and a new checksum is made
+                               LogIt "Change date '$FCD' does NOT MATCH the one found in index file, mismatch on '${col1}', generating filehash for '$FN'"
+                               FHASH=$(sha256sum "$FFN" | awk -F' ' '{ print $1 }')
+                            else
+                                LogIt "Change date '$FCD' matched the one found in index file:'${col1}'."
+                                if [ -z ${col2} ]; then
+                                    LogIt "Index did not contain a hash, generating filehash for '${col3}'"
+                                    FHASH=$(sha256sum "$FFN" | awk -F' ' '{ print $1 }')
+                                    LogIt "Generated hash '$FHASH'"
+                                else 
+                                    LogIt "Using indexed hash value: '${col2}'"
+                                    FHASH=${col2}
+                                fi
+
+                                # Done searching, so break out
+                                break
+                            fi
+                        fi
+                    else 
+                        LogIt "INDEXGREP was empty"
+                    fi
+                done <<< "$INDEXGREP"
+
+                if [ -z "$FHASH" ]; then
+                   LogIt "Generating filehash for '$FN', since there apperantly was no match on the index"
+                   FHASH=$(sha256sum "$FFN" | awk -F' ' '{ print $1 }'); 
+                fi
+            fi
+
+            # Generating temporary index file and unset variables
+            if [ -z "$FCD" ]; then 
+                LogIt "No file change date for '$FN'. This line should never show in the log!!"
+                unset FHASH
+            else
+                # LogIt "Send CSV line to WriteIndex"
+                WriteIndex "$FCD,$FHASH,$FN,$HOSTNAME"
+                unset FCD FHASH 
+            fi
+        else 
+            LogIt "File skipped based on FN string content '$FN'."
+        fi
+ 
+        LogIt "WRITE" $LOGTARGET
+    done < <(find $ROOT -type f | grep -v "/.sync")
+ 
+    WriteIndex "WRITE"
+    unset INDEX LAST_IDX
+    LogIt "Done (re)indexing"
+ 
+    mv $INDEXFILE.tmp $INDEXFILE
+    
+    if [ ! -z $MAILTO ]; then 
+        echo -e "Hi,\nThe indexing proces of '$ROOT' on '$HOSTNAME' is completed " | mail -s "BIA: Indexing $HOSTNAME completed" $MAILTO >/dev/null 2>&1 || { LogIt >&2 "Mail sent failed, 'ssmtp' and/or 'mailutils' not installed."; }
+    fi
+ 
+    LogIt "WRITE" $LOGTARGET
+}
+  
+# Read Config file
+# echo "Basename: `basename $0`, dirname `dirname $0`, full path $0"
+SCRIPTDIR=`dirname $0`
+if [ -f "$SCRIPTDIR/Backup_Index_Agent.conf" ]; then
+    LogIt "Backup_Index_Agent.conf found, it has the rights '$(ls -la $SCRIPTDIR/Backup_Index_Agent.conf | awk -F ' ' '{ print $1 }')' (Read required) and file encoding '$(file -bi $SCRIPTDIR/Backup_Index_Agent.conf)'."
+
+    source $SCRIPTDIR/Backup_Index_Agent.conf
+ 
+    # setting internal variables
+    DATE=`date +%Y%m%d`
+    LOGTARGET="${LOGFOLDER}/${DATE}_${LOGFILE}"
+    if [ ! -d "$LOGFOLDER" ]; then 
+        mkdir -p $LOGFOLDER
+        LogIt "LOGFOLDER '$LOGFOLDER' not found, directory created"
+    fi
+    unset LOGFILE LOGFOLDER DATE
+ 
+    echo "LogTarget is: $LOGTARGET"
+    LogIt "WriteIndexInterval set to: $WriteIndexInterval"
+else 
+    echo "Backup_Index_Agent.conf not found in "$SCRIPTDIR/Backup_Index_Agent.conf", starting from $(pwd), script stopped..."
+    exit
+fi
+ 
+# Proces jobs
+# Give Script low priority
+LogIt "$(renice 19 -p $$)"
+
+for JOB in "${JOBS[@]}"
+do
+    # Append / as failsafe, in case it was not set in the ROOT Path
+    ROOT=$(echo $JOB | awk -F';' '{ print $1 }' | xargs )/
+    # Replace a double / for a single one, in case it was in the ROOT Path
+    ROOT="${ROOT/'//'/'/'}"
+    FILEINDEX=$(echo $JOB | awk -F';' '{ print $2 }' | xargs)
+    
+    LogIt "Extracted Root: '$ROOT' and FileIndex: '$FILEINDEX' from JOBS array"    
+    StartIndex $ROOT $FILEINDEX
+    LogIt "WRITE" $LOGTARGET
+done
