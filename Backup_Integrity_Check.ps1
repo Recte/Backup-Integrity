@@ -128,7 +128,7 @@ Function CheckBackupIntegrety {
     Write-Progress -Activity $Activity -Status "Comparing hashvalue completed, writing content to file" -PercentComplete $Progress
     If ($GridView) { $IntegretyResult | Out-GridView }
     Else {
-        $CSVTarget = $(gci $DIR | Where-Object {$_.Name -match "raspberrypi3"}).FullName.Replace('.csv','.result.csv')
+        $CSVTarget = $(gci $DIR | Where-Object {$_.Name -match $SRC_Host}).FullName.Replace('.csv','.result.csv')
         $CSVColumnSort+="IntegretyStatus"
         Write-Host "Result is written to: $CSVTarget"
         $IntegretyResult | Select-Object $CSVColumnSort | Export-Csv -Path "$CSVTarget" -NoTypeInformation
