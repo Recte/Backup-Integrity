@@ -67,7 +67,13 @@ StartIndex() {
     fi
  
     LogIt "Starting Indexing '$ROOT', path string-length ${#ROOT}, storing index in '$INDEXFILE'"
- 
+
+    if [ -f $ROOT.sync/IgnoreList ]; then
+        LogIt "Resilio IgnoreList found in '$ROOT.sync/IgnoreList'"
+        # Ignore first line because it does not seem to match the grep somehow
+        IGNORELIST=$(sed 1,1d $ROOT.sync/IgnoreList | grep "^[^#;]")
+    fi
+    
     # Declare outside the read loop, so it is available when the loop is done
     declare FHASH WriteIndexStr
   
