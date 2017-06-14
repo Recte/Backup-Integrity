@@ -59,7 +59,6 @@ Function CheckBackupIntegrety {
     Write-Debug "One Percent is: $OnePerc"
     ForEach ($Key in $CSV_Content.Keys) {
         Write-Debug ">> Checking '$Key'"
-        # Write-Progress -Activity $Activity -Status "Comparing $Key hashvalue of $SRC_Host to those of $TAR_Hosts" -PercentComplete $Progress
         Write-Progress -Activity $Activity -PercentComplete $Progress
         $ResultLine = @{}
         Write-Debug "ResultLine has got '$($ResultLine.count)' keys"
@@ -69,7 +68,7 @@ Function CheckBackupIntegrety {
         }
         Write-Debug "ResultLine has now got '$($ResultLine.count)' keys"
         ForEach ($TAR_Host in $TAR_Hosts) {    # Set default value for target hosts
-            $ResultLine.Set_Item($TAR_Host,"Missing")
+            $ResultLine.Set_Item($TAR_Host,"File Missing")
         }
         
         $CSV_Content.$Key | ForEach-Object {
@@ -83,7 +82,14 @@ Function CheckBackupIntegrety {
             }
             ElseIf ($_.Hostname) {
                 Write-Debug "Setting Target values based on hostname: '$($_.Hostname)' `t -> '$($_.FileHash)'"
-                $ResultLine.Set_Item($_.Hostname, $_.FileHash)
+                If ($_.FileHash) {
+                    $ResultLine.Set_Item($_.Hostname, $_.FileHash)
+                }
+                Else {
+                    Write-Debug "No Filehash, using FileChangeDate: '$($_.FileChangeDate)'"
+                    $DateTime = get-date $origin.AddSeconds($_.FileChangeDate) -Format s
+                    $ResultLine.Set_Item($_.Hostname, $DateTime)
+                }
             }
             Else {
                 Write-Warning "On processing '$Key', a skip occured on hostname value: '$($_.Hostname)'"
@@ -92,33 +98,52 @@ Function CheckBackupIntegrety {
         
         Write-Debug ">> Comparing Target file hashes for '$Key'"
         $ResultLine.Add("IntegretyStatus","InSync")
-        Write-Debug "ResultLine has finaly got '$($ResultLine.count)' keys"
+        Write-Debug "ResultLine has eventually got '$($ResultLine.count)' keys"
         ForEach ($TAR_Host in $TAR_Hosts) {    # Compare hashes of Target
             Write-Debug "Target '$TAR_Host' Hash: '$($ResultLine.$TAR_Host)'"
             Write-Debug "Source '$SRC_Host' Hash: '$($ResultLine.FileHash)'"
+            # Proces Source
             If ($ResultLine.FileHash.Length -eq 0) {
                 Write-Debug "No Source hash for '$Key'"
-                $ResultLine.Set_Item("RelativePath", $Key)
-                $ResultLine.Set_Item("FileHash", "-")
-                $ResultLine.Set_Item("IntegretyStatus","Missing on Source")
+                $ResultLine.Set_Item("IntegretyStatus","Missing Filehash on Source")
+                If ($ResultLine.RelativePath.Length -eq 0) {
+                    Write-Debug "RelativePath is missing, entering value based on table Key: '$Key'"
+                    $ResultLine.Set_Item("RelativePath", $Key)
+                }
+                If ($ResultLine.FileChanged.Length -eq 0) {
+                    Write-Debug "FileChanged is missing, expecting the file to not exist on source."
+                    $ResultLine.Set_Item("IntegretyStatus","Sourcefile missing")
+                    $ResultLine.Set_Item("FileHash", "File Missing")
+                }
+                Else {
+                    $ResultLine.Set_Item("FileHash", "Filehash not stored")
+                }
             }
-            ElseIf ($ResultLine.$TAR_Host.Length -eq 0) {
-                Write-Debug "Empty Hash for Target host: $TAR_Host"
-                $ResultLine.Set_Item($TAR_Host, "No FileHash")
-                $ResultLine.Set_Item("IntegretyStatus","Out of Sync")
-            }
-            ElseIf ($ResultLine.$TAR_Host -match $ResultLine.FileHash) {
-                Write-Debug "Match on Hashvalues"
-                $ResultLine.Set_Item($TAR_Host, "InSync")
-            }
-            ElseIf ($ResultLine.$TAR_Host.Length -eq $ResultLine.FileHash.Length) {
-                Write-Debug "Mismatch on Hashvalues"
-                $ResultLine.Set_Item($TAR_Host, "Out of Sync")
-                $ResultLine.Set_Item("IntegretyStatus","Out of Sync")
+            
+            # Proces Target
+            If ($ResultLine.$TAR_Host.Length -ne 0) {   # Changedate or Filehash available
+                If ($ResultLine.$TAR_Host -match $ResultLine.FileHash) {
+                    Write-Debug "Match on Hashvalues, leave IntegretyStatus unchanged"
+                    $ResultLine.Set_Item($TAR_Host, "InSync")
+                }
+                ElseIf ($ResultLine.FileChanged) {  # If exists, there was a file on source
+                    If ($ResultLine.$TAR_Host -match $ResultLine.FileChanged) {
+                        $ResultLine.Set_Item($TAR_Host, "Equal File Changedate")
+                    }
+                    Else {
+                        $ResultLine.Set_Item("IntegretyStatus","Out of Sync")
+                    }
+                }
+                Else {
+                    Write-Debug "Notting to compare with"
+                }
             }
             Else {
-                Write-Debug "No condition match on: '$($ResultLine.$TAR_Host)'"
+                # Leave $ResultLine.$TAR_Host unchanged -> Missing
+                Write-Debug "Empty Hash for Target host: $TAR_Host"
+                $ResultLine.Set_Item("IntegretyStatus","Targetfile Missing")
             }
+            
             Write-Debug "--"
         }   
         $IntegretyResult += New-Object PSObject -Property $ResultLine
