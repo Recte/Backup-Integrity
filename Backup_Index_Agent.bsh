@@ -50,11 +50,6 @@ StartIndex() {
     INDEXFILE=$2
     INDEXDIR=$(dirname "${INDEXFILE}")
     WriteIndexLines=0
-
-    if [ ! -d "$INDEXDIR" ]; then
-        mkdir -p $INDEXDIR
-        LogIt "INDEXDIR '$INDEXDIR' not found, directory created"
-    fi
  
     if [ -f $INDEXFILE.tmp ]; then
         LogIt "STOPPED $$, '$INDEXFILE.tmp' exists, expecting another instance to be running!"
@@ -63,6 +58,10 @@ StartIndex() {
         exit
     else
         LogIt "'$INDEXFILE.tmp' not found, expecting no another instance to be running."
+        if [ ! -d "$INDEXDIR" ]; then
+            mkdir -p $INDEXDIR
+            LogIt "INDEXDIR '$INDEXDIR' not found, directory created"
+        fi
         printf '"FileChangeDate","FileHash","RelativePath","Hostname"\n' > $INDEXFILE.tmp
     fi
  
